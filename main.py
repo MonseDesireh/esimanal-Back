@@ -1,61 +1,128 @@
+from datetime import datetime
 from flask import Flask, jsonify, request
-from flask_mysqldb import MySQL
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import joinedload
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
-app.config['MYSQL_HOST'] = 'localhost'
-app.config["MYSQL_PORT"] = 3306
-app.config['MYSQL_USER'] = 'root'
-app.config['MYSQL_PASSWORD'] = 'password'
-app.config['MYSQL_DB'] = 'esimanal'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://root:password@localhost:3306/esimanal'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-mysql = MySQL(app)
+db = SQLAlchemy(app)
 
-@app.route('/post-news',  methods=['GET', 'POST'])
-def postNews():
-    try:
-        data = request.get_json()
-        cursor = mysql.connection.cursor()
-        cursor.execute(f"""
-                        INSERT INTO noticias (titulo, contenido, created_at, categoria_id, img_id, autor_id)
-                        VALUES ('{data['titulo']}', '{data['contenido']}', '2024-01-01 00:00:00', 1, null, 1)
-                        """)
+class Role(db.Model):
+    __tablename__ = 'role'
+    id = db.Column(db.Integer, primary_key=True)
+    descripcion = db.Column(db.String(50), nullable=False)
+    user = db.relationship('User', backref='Role', lazy=True)
+    
+    def serialize(self):
+        return {
+            'id': self.id,
+            'descripcion': self.descripcion
+        }
+
+class CatCategoria(db.Model):
+    __tablename__ = 'cat_categorias'
+    id = db.Column(db.Integer, primary_key=True)
+    descripcion = db.Column(db.String(50), nullable=False)
+    noticia = db.relationship('Noticias', backref='categorias', lazy=True)
+    
+    def serialize(self):
+        return {
+            'id': self.id,
+            'descripcion': self.descripcion
+        }
+    
+class imgSubmissions(db.Model):
+    __tablename__ = 'img_submissions'
+    id = db.Column(db.Integer, primary_key=True)
+    ruta = db.Column(db.String(255), nullable=False)
+    noticia = db.relationship('Noticias', backref='imagenes', lazy=True)
+    
+    def serialize(self):
+        return {
+            'id': self.id,
+            'ruta': self.ruta
+        }
+    
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    nombre = db.Column(db.String(50), nullable=False)
+    contacto = db.Column(db.String(50), nullable=False)
+    titulo = db.Column(db.String(50), nullable=False)
+    role_id = db.Column(db.Integer, db.ForeignKey('role.id'))
+    role = db.relationship('Role', backref='usuarios_role', lazy=True)
+    noticia = db.relationship('Noticias', backref='usuarios', lazy=True)
+    
+    def serialize(self):
+        return {
+            'id': self.id,
+            'nombre': self.nombre,
+            'contacto': self.contacto,
+            'titulo': self.titulo,
+            'role_id': self.role_id
+        }
+    
+
+class Noticias(db.Model):
+    __tablename__ = 'noticias'
+    id = db.Column(db.Integer, primary_key = True)
+    titulo = db.Column(db.String(50), nullable = False)
+    contenido = db.Column(db.String(50), nullable = False)
+    categoria_id = db.Column(db.Integer, db.ForeignKey('cat_categorias.id'))
+    img_id = db.Column(db.Integer, db.ForeignKey('img_submissions.id'))
+    autor_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+    autor = db.relationship('User', backref='noticias_autor', lazy=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable = False)
+    
+    def serialize(self):
+        return {
+            'id': self.id,
+            'titulo': self.titulo,
+            'contenido': self.contenido,
+            'categoria_id': self.categoria_id,
+            'img_id': self.img_id,
+            'autor_id': self.autor_id,
+            'created_at': self.created_at
+        }
         
-        mysql.connection.commit()
-        
-        return data
-    except Exception as e:
-        return jsonify({"message": f"Error de conexión: {str(e)}"})
+with app.app_context():
+    db.create_all()
 
-    finally:
-        cursor.close()
+# @app.route('/post-news',  methods=['GET', 'POST'])
+# def postNews():
+#     try:
+#         data = request.get_json()
+#         cursor = mysql.connection.cursor()
+#         cursor.execute(f"""
+#                         INSERT INTO noticias (titulo, contenido, created_at, categoria_id, img_id, autor_id)
+#                         VALUES ('{data['titulo']}', '{data['contenido']}', '2024-01-01 00:00:00', 1, null, 1)
+#                         """)
+        
+#         mysql.connection.commit()
+        
+#         return data
+#     except Exception as e:
+#         return jsonify({"message": f"Error de conexión: {str(e)}"})
+
+#     finally:
+#         cursor.close()
         
 @app.route('/get-news', methods=['GET'])
 def getNews():
     try:
-        cursor = mysql.connection.cursor()
-        cursor.execute(f"""
-                    SELECT 
-                            n.id as id,
-                            n.titulo as titulo,
-                            n.contenido as contenido,
-                            n.created_at as creacion,
-                            u.nombre as nombre_autor,
-                            u.contacto as contacto,
-                            u.titulo as titulo_autor,
-                            descripcion as categoria
-                        FROM 
-                            noticias as n
-                        join users as u on u.id = n.autor_id 
-                        join cat_categorias as cc on cc.id = n.categoria_id;
-                    """)
-        response = cursor.fetchone()
-        
-        return jsonify(response)
+        result = (
+            db.session.query(Noticias)
+            .join(User, Noticias.autor_id == User.id)
+            .join(CatCategoria, Noticias.categoria_id == CatCategoria.id)
+            .options(joinedload(Noticias.autor).joinedload(User.role))
+            .all()
+        )
+
+        return jsonify([item.serialize() for item in result])
     except Exception as e:
         return jsonify({"message": f"Error de conexión: {str(e)}"})
-
-    finally:
-        cursor.close()
