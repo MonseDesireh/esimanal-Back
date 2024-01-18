@@ -1,16 +1,24 @@
+import os
 from datetime import datetime
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import joinedload
 from flask_cors import CORS
+from flask_uploads import UploadSet, configure_uploads, IMAGES
 
 app = Flask(__name__)
+
 CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://root:password@localhost:3306/esimanal'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
+
+photos = UploadSet('photos', IMAGES)
+app.config['UPLOADED_PHOTOS_DEST'] = os.path.join(os.getcwd(), 'storage/private/images/')
+configure_uploads(app, photos)
+
 
 class Role(db.Model):
     __tablename__ = 'role'
@@ -109,21 +117,41 @@ class Noticias(db.Model):
                     'descripcion': self.autor.role.descripcion
                 }
             },
+            'img' : {
+                'id': self.img.id,
+                'ruta': self.img.ruta
+            }
         }
+
         
 with app.app_context():
     db.create_all()
 
+
+
+
 @app.route('/post-news',  methods=['GET', 'POST'])
 def postNews():
     try:
-        data = request.get_json()
+        if 'photo' not in request.files:
+            return jsonify({"message": f"No se ingreso ninguna imagen"})
+            
+        archivo = request.files['photo']
+        nombre_archivo = photos.save(archivo)
+        
+        img_submission = imgSubmissions(\
+            ruta = nombre_archivo
+        )
+        db.session.add(img_submission)
+        db.session.flush()
+        
+        data = request.form.to_dict()
         
         nueva_noticia = Noticias(
             titulo = data['titulo'],
             contenido = data['contenido'],
-            categoria_id = 1,
-            img_id = None,
+            categoria_id = data['categoria_id'],
+            img_id = img_submission.id,
             autor_id = 1,
             created_at = datetime.utcnow()
         )
@@ -135,11 +163,29 @@ def postNews():
     except Exception as e:
         return jsonify({"message": f"Error de conexión: {str(e)}"})
         
+        
+        
 @app.route('/get-news', methods=['GET'])
 def getNews():
     try:
-        users = Noticias.query.options(db.joinedload(Noticias.autor)).all()
+        users = Noticias.query.options(db.joinedload(Noticias.autor), db.joinedload(Noticias.img)).order_by(Noticias.id.desc()).all()
         
         return jsonify([user.serialize() for user in users])
     except Exception as e:
         return jsonify({"message": f"Error de conexión: {str(e)}"})
+    
+    
+    
+@app.route('/get-categorias', methods=['GET'])
+def getCategorias():
+    try:
+        categorias = CatCategoria.query.all()
+        
+        return jsonify([categoria.serialize() for categoria in categorias])
+    except Exception as e:
+        return jsonify({"message": f"Error de conexión: {str(e)}"})
+
+
+@app.route('/get-image/<filename>', methods=['GET'])
+def getImages(filename):
+    return send_from_directory(app.config['UPLOADED_PHOTOS_DEST'], filename)
